@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <variant>
 
 #include "nix/util/canon-path.hh"
 #include "nix/util/fun.hh"
@@ -266,10 +267,10 @@ class SymlinkNotAllowed final : public CloneableError<SymlinkNotAllowed, Error>
     void anchor() override;
 
 public:
-    CanonPath path;
+    std::variant<CanonPath, std::filesystem::path> path;
 
     SymlinkNotAllowed(CanonPath path)
-        : CloneableError("relative path '%s' points to a symlink, which is not allowed", path.rel())
+        : CloneableError(defaultMsg, path.abs())
         , path(std::move(path))
     {
     }
@@ -280,6 +281,22 @@ public:
         , path(std::move(path))
     {
     }
+
+    SymlinkNotAllowed(std::filesystem::path path)
+        : CloneableError(defaultMsg, path.string())
+        , path(std::move(path))
+    {
+    }
+
+    template<typename... Args>
+    SymlinkNotAllowed(std::filesystem::path path, const std::string & fs, Args &&... args)
+        : CloneableError(fs, std::forward<Args>(args)...)
+        , path(std::move(path))
+    {
+    }
+
+private:
+    static inline const std::string defaultMsg = "path '%s' is a symlink, which is not allowed";
 };
 
 /**
