@@ -300,6 +300,12 @@ private:
 };
 
 /**
+ * Exception thrown when accessing a filtered path (see
+ * `FilteringSourceAccessor`).
+ */
+MakeError(RestrictedPathError, Error);
+
+/**
  * Return an accessor for the root filesystem.
  */
 ref<SourceAccessor> getFSSourceAccessor();
