@@ -555,10 +555,9 @@ static void unparseOutput(
     std::string_view)
 {
     s += ',';
-    /* Store paths must go through the escaping writer. On Unix they contain no
-       character `printString` would escape, so this is byte-identical there; on
-       Windows they contain backslashes, which the unquoted writer emits raw and
-       the reader then mis-decodes (`\n` in `...\nix\store` becomes a newline). */
+    /* Store paths need escaping: on Windows they contain backslashes, which the
+       unquoted writer emits raw and the reader mis-decodes. Byte-identical on
+       Unix, where they hold nothing `printString` escapes. */
     printString(s, store.printStorePath(doi.path));
     s += ',';
     printUnquotedString(s, {});
@@ -574,7 +573,6 @@ static void unparseOutput(
     std::string_view outputName)
 {
     s += ',';
-    /* See the note at the `doi.path` write above: store paths need escaping. */
     printString(s, store.printStorePath(dof.path(store, drvName, outputName)));
     s += ',';
     printUnquotedString(s, dof.ca.printMethodAlgo());
@@ -692,7 +690,6 @@ std::string unparse(const Derivation<Inputs, Out> & drv, const StoreDirConfig & 
 
     s += "],"sv;
     auto paths = store.printStorePathSet(drv.inputs.srcs); // FIXME: slow
-    /* `paths` are store paths; see the note at the `doi.path` write above. */
     printStrings(s, paths.begin(), paths.end());
 
     s += ',';
