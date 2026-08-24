@@ -15,21 +15,14 @@ namespace nix {
 
 namespace {
 
-/**
- * Make a handle (not) inheritable by child processes.
- *
- * libutil has an equivalent, but it is file-local to `windows/processes.cc`
- * rather than exported, so it cannot be reused from here.
- */
+/** Like `windows/processes.cc`'s version, which is file-local rather than exported. */
 void setInheritable(AutoCloseFD & fd, bool inherit)
 {
     if (!SetHandleInformation(fd.get(), HANDLE_FLAG_INHERIT, inherit ? HANDLE_FLAG_INHERIT : 0))
         throw windows::WinError("cannot change handle inheritability");
 }
 
-/**
- * A handle to the null device, for the builder's stdin.
- */
+/** The builder's stdin. */
 AutoCloseFD openNullDevice()
 {
     SECURITY_ATTRIBUTES sa{
@@ -45,14 +38,10 @@ AutoCloseFD openNullDevice()
 }
 
 /**
- * Quote one argument for a Windows command line.
+ * Quote one argument per the `CommandLineToArgvW` rules: backslashes are
+ * literal unless they precede a quote, where they double.
  *
- * Windows passes a single string and lets the callee split it, so the split
- * rules have to be reproduced here. These are the CRT/`CommandLineToArgvW`
- * rules: backslashes are literal unless they precede a quote, in which case
- * they are doubled.
- *
- * libutil has `windowsEscape`, but like the helpers above it is not exported.
+ * Like `windowsEscape`, which is also not exported.
  */
 OsString escapeArg(OsString arg)
 {
@@ -85,26 +74,20 @@ OsString escapeArg(OsString arg)
 }
 
 /**
- * A minimal, unsandboxed `DerivationBuilder` for Windows.
+ * A minimal, unsandboxed `DerivationBuilder` for Windows: enough to run a
+ * builder and register its outputs, and no more. Missing, relative to Unix:
  *
- * This exists so that `nix build` does something other than throw on Windows.
- * It is deliberately the smallest thing that can run a builder and register
- * its outputs, and it does *not* attempt to reproduce what the Unix builder
- * does. In particular there is:
- *
- * - no sandbox, no chroot, no filesystem isolation
+ * - no sandbox, chroot, or filesystem isolation
  * - no build user; the builder runs as whoever ran Nix
  * - no network isolation
  * - no recursive Nix (`submitOutput` throws)
- * - no content-addressed or fixed-output derivation support
+ * - no content-addressed or fixed-output derivations
  * - no hash rewriting, so no self-references in outputs
- * - no output checks (`allowedReferences` and friends are ignored)
+ * - no output checks; `allowedReferences` and friends are ignored
  *
- * Those omissions are why this is a separate class rather than a subclass of
- * the Unix `DerivationBuilderImpl`: sharing that code needs it moved out of
- * `unix/` first, which is a refactor of the core build path and wants upstream
- * agreement on the module split. This class is small enough to throw away when
- * that happens.
+ * Separate from `DerivationBuilderImpl` rather than derived from it because that
+ * class lives under `unix/`. Sharing it means moving the platform-neutral part
+ * out first, at which point this can go.
  */
 class WindowsDerivationBuilder : public DerivationBuilder, public DerivationBuilderParams
 {
@@ -128,17 +111,13 @@ public:
     /** The worker's I/O completion port, which the log pipe must be tied to. */
     HANDLE ioport;
 
-    /**
-     * The build directory. Not a sandbox -- just somewhere for the builder to
-     * put things, exposed as `NIX_BUILD_TOP`.
-     */
+    /** The build directory, exposed as `NIX_BUILD_TOP`. Not a sandbox. */
     std::filesystem::path tmpDir;
 
     /**
-     * The builder's merged stdout/stderr. Must be a `MuxablePipe` rather than a
-     * plain pipe, because on Windows the worker waits via I/O completion ports
-     * and `MuxablePipePollState::iterate` reads the pipe's `overlapped` state
-     * directly.
+     * The builder's merged stdout/stderr. A `MuxablePipe` because the worker
+     * waits on I/O completion ports, and `MuxablePipePollState::iterate` reads
+     * the pipe's `overlapped` state directly.
      */
     MuxablePipe builderPipe;
 
@@ -191,16 +170,13 @@ public:
 private:
 
     /**
-     * Remove a path that a previous build may have left behind.
-     *
-     * Store paths are made read-only, and Windows honours the read-only
-     * *attribute* when deleting where POSIX governs unlink by directory
-     * permission. So the attribute has to be cleared first or the delete fails
-     * with `ERROR_ACCESS_DENIED`.
+     * Remove a path a previous build left behind. Store paths are read-only, and
+     * Windows honours that attribute on delete where POSIX goes by directory
+     * permission, so it has to be cleared first.
      */
     void deleteStalePath(const std::filesystem::path & path);
 
-    /** Assemble the builder's environment block. Deliberately not inherited. */
+    /** The builder's environment block. Not inherited from the parent. */
     OsString makeEnvBlock();
 
     /** Start the builder. Sets `process`. */
@@ -212,8 +188,7 @@ void WindowsDerivationBuilder::deleteStalePath(const std::filesystem::path & pat
     if (!std::filesystem::exists(std::filesystem::symlink_status(path)))
         return;
 
-    /* Clear the read-only attribute on the path and everything under it,
-       otherwise `DeleteFileW` refuses. */
+    /* `DeleteFileW` refuses a read-only file, so clear it here and below. */
     auto clearReadOnly = [](const std::filesystem::path & p) {
         auto wide = p.native();
         auto attrs = GetFileAttributesW(wide.c_str());
@@ -233,15 +208,11 @@ OsString WindowsDerivationBuilder::makeEnvBlock()
 {
     OsStringMap env;
 
-    /* For runtime strings only; fixed names use `OS_STR` instead, which widens
-       at compile time. `string_to_os_string` is overloaded on both
-       `std::string_view` and `std::string`, so a bare literal is ambiguous. */
+    /* For runtime strings; fixed names use `OS_STR`, which widens at compile time. */
     auto os = [](std::string_view s) { return string_to_os_string(s); };
 
-    /* Keep the environment minimal and explicit. Nothing is inherited: an
-       inherited environment is exactly the impurity the store is supposed to
-       exclude, and `spawnProcess` in libutil merges the parent's environment,
-       which is why this does not use it. */
+    /* Built from scratch rather than inherited. This is why `spawnProcess` is not
+       used below: it merges the parent's environment. */
     env[OS_STR("NIX_BUILD_TOP")] = tmpDir.native();
     env[OS_STR("TMP")] = tmpDir.native();
     env[OS_STR("TEMP")] = tmpDir.native();
@@ -250,18 +221,9 @@ OsString WindowsDerivationBuilder::makeEnvBlock()
     env[OS_STR("PWD")] = tmpDir.native();
     env[OS_STR("NIX_STORE")] = os(store.storeDir);
 
-    /* `cmd.exe` and most Windows programs will not start without these. This
-       is a deliberate impurity, and the reason this builder is not sandboxed:
-       there is no Windows equivalent of a minimal chroot to put them in.
-
-       `PATH` is in this list because without it a builder cannot invoke any
-       external program at all -- not even the ones shipped with Windows -- so
-       `cmd /c xcopy ...` fails with "not recognized as an internal or external
-       command". Unix builds can start from an empty `PATH` because the store
-       closure supplies every executable by absolute path; on Windows the system
-       tools live outside the store and are found through `PATH`. Passing it
-       through is the pragmatic choice, and it is impure: a derivation can see
-       whatever else happens to be on the builder's `PATH`. */
+    /* Most Windows programs, `cmd.exe` included, will not start without these, and
+       system tools live outside the store so `PATH` is needed to find them at all.
+       Impure: a derivation sees whatever else is on the builder's `PATH`. */
     for (std::string_view name : {"SystemRoot", "SystemDrive", "windir", "COMSPEC", "PATHEXT", "PATH"})
         if (auto value = getEnvOs(os(name)))
             env[os(name)] = *value;
@@ -379,12 +341,8 @@ std::optional<Descriptor> WindowsDerivationBuilder::startBuild()
 
     spawnBuilder();
 
-    /* The worker needs the whole pipe, not just the handle -- see the comment
-       on `commChannel`.
-
-       `builderOut` is deliberately left unset: the pipe owns the read handle,
-       and giving `builderOut` the same handle would close it twice. Callers on
-       Windows compare against `commChannel->readSide` instead. */
+    /* `builderOut` stays unset: the pipe owns the read handle, so duplicating it
+       there would close it twice. Windows callers use `commChannel->readSide`. */
     commChannel = &builderPipe;
 
     return builderPipe.readSide.get();
@@ -442,11 +400,8 @@ SingleDrvOutputs WindowsDerivationBuilder::unprepareBuild()
            read-only, which is what `deleteStalePath` above has to undo. */
         canonicalisePathMetaData(actualPath, {});
 
-        /* The accessor is rooted *at the output path*, so the NAR is of the
-           output itself rather than of the store. This mirrors what the Unix
-           builder does; a store-rooted accessor produces the wrong NAR (and on
-           Windows fails outright, since the store dir alone is not a store
-           path). */
+        /* Rooted at the output, as the Unix builder does. A store-rooted accessor
+           gives the wrong NAR, and on Windows fails: the store dir is not a path. */
         auto narHashAndSize = hashPath(
             SourcePath{makeFSSourceAccessor(actualPath), CanonPath::root},
             FileSerialisationMethod::NixArchive,

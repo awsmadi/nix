@@ -183,13 +183,8 @@ public:
 
 #ifdef _WIN32
     /**
-     * The pipe `builderOut` is the read side of.
-     *
-     * On Windows the worker waits with I/O completion ports rather than
-     * `poll`, and `MuxablePipePollState::iterate` needs the pipe's `OVERLAPPED`
-     * state and buffer, not just its handle. So a `Descriptor` is not enough to
-     * register a child with the worker, and the builder has to hand out the
-     * whole pipe. Set by `startBuild`.
+     * The log pipe, set by `startBuild`. `MuxablePipePollState::iterate` needs its
+     * `OVERLAPPED` state and buffer, so a `Descriptor` cannot register a child.
      */
     MuxablePipe * commChannel = nullptr;
 #endif
@@ -273,13 +268,9 @@ DerivationBuilderUnique makeExternalDerivationBuilder(
     const ExternalBuilder & handler);
 #else
 /**
- * The Windows builder needs the worker's I/O completion port, because the
- * builder's log pipe has to be tied to it for the worker to be able to wait on
- * it. This is the extra parameter versus the Unix signature.
+ * @param ioport The worker's I/O completion port, which the log pipe is tied to.
  *
- * @param ioport The worker's I/O completion port.
- *
- * @note There is no `makeExternalDerivationBuilder` counterpart yet.
+ * @note No `makeExternalDerivationBuilder` counterpart yet.
  */
 DerivationBuilderUnique makeDerivationBuilder(
     LocalStore & store,

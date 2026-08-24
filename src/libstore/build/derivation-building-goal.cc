@@ -1077,11 +1077,8 @@ Goal::Co DerivationBuildingGoal::buildLocally(
 
         if (worker.settings.postBuildHook.get() != "") {
 #ifdef _WIN32
-            /* The post-build hook needs its own pipe registered with the
-               worker, and on Windows that has to be a `MuxablePipe` tied to the
-               completion port rather than a plain pipe. `runPostBuildHook` does
-               not produce one, so this is left unsupported for now rather than
-               silently skipped. */
+            /* Would need a `MuxablePipe` tied to the completion port, which
+               `runPostBuildHook` does not produce. Throw rather than skip. */
             throw UnimplementedError("the post-build hook is not yet supported on Windows");
 #else
             auto hookState = runPostBuildHook(worker.settings, worker.store, *logger, drvPath, outputPaths);
