@@ -68,24 +68,17 @@ void initLibUtil()
             throw Error("could not initialise OpenSSL");
 
 #ifdef _WIN32
-        /* Winsock must be initialised once per process before any socket
-           call. Without this, every socket() in the process fails with
-           WSANOTINITIALISED, which is how the daemon and every `unix://`
-           store became unreachable on Windows. 2.2 is the version every
-           supported Windows provides.
+        /* Winsock needs this once per process before any socket call; without it
+           every socket() fails with WSANOTINITIALISED.
 
-           WSAStartup() returns the error code directly rather than setting
-           it, because WSAGetLastError() is itself unusable until Winsock is
-           up -- so the code is read from the return value.
+           No matching WSACleanup(), for the same reason the OpenSSL atexit()
+           handler is suppressed above: tearing it down while another thread holds
+           a socket invalidates that socket, and we are exiting anyway.
 
-           Deliberately not paired with WSACleanup(). Winsock reference-counts
-           startup against cleanup, and tearing it down while another thread
-           still holds a socket invalidates that socket. For the same reason
-           the OpenSSL atexit() handler is suppressed above, we want this
-           released only by process exit. */
+           The code comes from the return value because WSAGetLastError() is not
+           usable until Winsock is up, and must be a DWORD to select the
+           explicit-code WinError constructor over the GetLastError() one. */
         WSADATA wsaData;
-        /* The error code has to be a `DWORD` for the explicitly-provided-code
-           `WinError` constructor to be chosen over the `GetLastError()` one. */
         if (DWORD err = static_cast<DWORD>(WSAStartup(MAKEWORD(2, 2), &wsaData)); err != 0)
             throw windows::WinError(err, "could not initialise Winsock");
 #endif
