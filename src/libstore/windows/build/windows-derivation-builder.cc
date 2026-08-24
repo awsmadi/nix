@@ -142,8 +142,11 @@ public:
      */
     MuxablePipe builderPipe;
 
-    /** The child. */
-    AutoCloseFD process;
+    /** The child. Killed by `Pid`'s destructor if it outlives this object. */
+    Pid process;
+
+    /** Whether `process` holds a started child, since `Pid` does not say. */
+    bool started = false;
 
     /* --- RestrictionContext --- */
 
@@ -230,21 +233,22 @@ OsString WindowsDerivationBuilder::makeEnvBlock()
 {
     OsStringMap env;
 
-    /* `string_to_os_string` is overloaded on both `std::string_view` and
-       `std::string`, so a string literal is ambiguous. */
+    /* For runtime strings only; fixed names use `OS_STR` instead, which widens
+       at compile time. `string_to_os_string` is overloaded on both
+       `std::string_view` and `std::string`, so a bare literal is ambiguous. */
     auto os = [](std::string_view s) { return string_to_os_string(s); };
 
     /* Keep the environment minimal and explicit. Nothing is inherited: an
        inherited environment is exactly the impurity the store is supposed to
        exclude, and `spawnProcess` in libutil merges the parent's environment,
        which is why this does not use it. */
-    env[os("NIX_BUILD_TOP")] = tmpDir.native();
-    env[os("TMP")] = tmpDir.native();
-    env[os("TEMP")] = tmpDir.native();
-    env[os("TMPDIR")] = tmpDir.native();
-    env[os("TEMPDIR")] = tmpDir.native();
-    env[os("PWD")] = tmpDir.native();
-    env[os("NIX_STORE")] = os(store.storeDir);
+    env[OS_STR("NIX_BUILD_TOP")] = tmpDir.native();
+    env[OS_STR("TMP")] = tmpDir.native();
+    env[OS_STR("TEMP")] = tmpDir.native();
+    env[OS_STR("TMPDIR")] = tmpDir.native();
+    env[OS_STR("TEMPDIR")] = tmpDir.native();
+    env[OS_STR("PWD")] = tmpDir.native();
+    env[OS_STR("NIX_STORE")] = os(store.storeDir);
 
     /* `cmd.exe` and most Windows programs will not start without these. This
        is a deliberate impurity, and the reason this builder is not sandboxed:
@@ -319,24 +323,29 @@ void WindowsDerivationBuilder::spawnBuilder()
         == 0)
         throw windows::WinError("CreateProcessW failed for builder '%s'", drv.builder);
 
-    process = procInfo.hProcess;
+    /* Held locally until the child is fully set up, so that the failure paths
+       below can tear it down without `Pid` also doing so. */
+    AutoCloseFD processHandle = procInfo.hProcess;
     AutoCloseFD thread = procInfo.hThread;
 
     /* Put the child in a job object so it dies with us rather than leaking.
        Without this a runaway builder outlives the daemon. */
     Descriptor job = CreateJobObjectW(NULL, NULL);
     if (job == NULL) {
-        TerminateProcess(procInfo.hProcess, 1);
+        TerminateProcess(processHandle.get(), 1);
         throw windows::WinError("cannot create job object for builder");
     }
-    if (AssignProcessToJobObject(job, procInfo.hProcess) == FALSE) {
-        TerminateProcess(procInfo.hProcess, 1);
+    if (AssignProcessToJobObject(job, processHandle.get()) == FALSE) {
+        TerminateProcess(processHandle.get(), 1);
         throw windows::WinError("cannot assign builder to job object");
     }
-    if (ResumeThread(procInfo.hThread) == (DWORD) -1) {
-        TerminateProcess(procInfo.hProcess, 1);
+    if (ResumeThread(thread.get()) == (DWORD) -1) {
+        TerminateProcess(processHandle.get(), 1);
         throw windows::WinError("cannot resume builder");
     }
+
+    process = std::move(processHandle);
+    started = true;
 
     /* We do not write to the builder's output, and holding the write side open
        would mean never seeing EOF. */
@@ -383,14 +392,13 @@ std::optional<Descriptor> WindowsDerivationBuilder::startBuild()
 
 bool WindowsDerivationBuilder::killChild()
 {
-    if (!process)
+    if (!started)
         return false;
 
-    /* `TerminateProcess` is the only option: Windows has no signals, so a
-       builder cannot be asked to exit politely. */
-    TerminateProcess(process.get(), 1);
-    WaitForSingleObject(process.get(), INFINITE);
-    process.close();
+    /* `Pid::kill` terminates and then reaps. Windows has no signals, so there
+       is no gentler option to try first. */
+    process.kill();
+    started = false;
 
     return true;
 }
@@ -398,14 +406,9 @@ bool WindowsDerivationBuilder::killChild()
 SingleDrvOutputs WindowsDerivationBuilder::unprepareBuild()
 {
     /* The caller only gets here once the log pipe hit EOF, which means the
-       builder closed its handles. Wait anyway, so the exit code is settled. */
-    WaitForSingleObject(process.get(), INFINITE);
-
-    DWORD exitCode = 1;
-    if (!GetExitCodeProcess(process.get(), &exitCode))
-        throw windows::WinError("cannot get builder exit code");
-
-    process.close();
+       builder closed its handles. Reap anyway, so the exit code is settled. */
+    int exitCode = process.wait();
+    started = false;
 
     miscMethods->closeLogFile();
     miscMethods->childTerminated();
@@ -414,7 +417,7 @@ SingleDrvOutputs WindowsDerivationBuilder::unprepareBuild()
         deletePath(tmpDir);
         throw BuilderFailureError{
             BuildResult::Failure::PermanentFailure,
-            (int) exitCode,
+            exitCode,
             fmt("builder '%s' exited with status %d", drv.builder, exitCode),
         };
     }

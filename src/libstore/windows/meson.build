@@ -1,6 +1,6 @@
 sources += files(
-  'pathlocks.cc',
   'build/windows-derivation-builder.cc',
+  'pathlocks.cc',
 )
 
 include_dirs += include_directories(
