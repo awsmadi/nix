@@ -804,7 +804,17 @@ void WindowsSourceAccessor::assertNoSymlinks(CanonPath path)
 
 ref<SourceAccessor> getFSSourceAccessor()
 {
-    static auto rootFS = makeFSSourceAccessor("/", /*trackLastModified=*/false);
+    static auto rootFS = makeFSSourceAccessor(
+#ifdef _WIN32
+        /* Windows has no single filesystem root. An absolute path carries its own
+           root name -- a drive letter or UNC prefix -- so `"/"` is root-relative
+           rather than absolute, and trips `root.empty() || root.is_absolute()`.
+           An empty root means "no prefix", which is already a supported mode. */
+        std::filesystem::path{},
+#else
+        "/",
+#endif
+        /*trackLastModified=*/false);
     return rootFS;
 }
 
