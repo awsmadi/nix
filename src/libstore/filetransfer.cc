@@ -99,7 +99,7 @@ std::optional<std::filesystem::path> FileTransferSettings::getDefaultSSLCertFile
 
 void FileTransferSettings::anchor() {}
 
-FileTransferSettings::FileTransferSettings()
+void FileTransferSettings::applySSLCertFileOverride()
 {
     std::optional<AbsolutePath> sslOverride =
         getEnvOs(OS_STR("NIX_SSL_CERT_FILE"))
