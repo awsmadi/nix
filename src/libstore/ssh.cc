@@ -150,7 +150,7 @@ Strings createSSHEnv()
 
 std::unique_ptr<SSHMaster::Connection> SSHMaster::startCommand(OsStrings && command, OsStrings && extraSshArgs)
 {
-#ifdef _WIN32 // TODO re-enable on Windows, once we can start processes.
+#ifdef _WIN32 // TODO re-enable on Windows, once we can fork.
     throw UnimplementedError("cannot yet SSH on windows because spawning processes is not yet implemented");
 #else
     std::filesystem::path socketPath = startMaster();
@@ -229,7 +229,7 @@ std::unique_ptr<SSHMaster::Connection> SSHMaster::startCommand(OsStrings && comm
 #endif
 }
 
-#ifndef _WIN32 // TODO re-enable on Windows, once we can start processes.
+#ifndef _WIN32 // TODO re-enable on Windows, once we can fork.
 
 std::filesystem::path SSHMaster::startMaster()
 {
@@ -238,7 +238,7 @@ std::filesystem::path SSHMaster::startMaster()
 
     auto state(state_.lock());
 
-    if (state->sshMaster != INVALID_DESCRIPTOR)
+    if (state->sshMaster)
         return state->socketPath;
 
     state->socketPath = tmpDir->path() / "ssh.sock";

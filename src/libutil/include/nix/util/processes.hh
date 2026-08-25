@@ -30,10 +30,16 @@ namespace nix {
 struct Sink;
 struct Source;
 
+namespace unix {
+#ifndef _WIN32
+constexpr static pid_t INVALID_PID = -1;
+#endif
+}; // namespace unix
+
 class Pid
 {
 #ifndef _WIN32
-    pid_t pid = -1;
+    pid_t pid = unix::INVALID_PID;
     bool separatePG = false;
     int killSignal = SIGKILL;
     std::chrono::milliseconds killTimeout;
@@ -56,6 +62,13 @@ public:
     void operator=(AutoCloseFD pid);
 #endif
     ~Pid();
+
+    /**
+     * Whether this holds a child at all, as opposed to having been
+     * default-constructed, moved from, or waited for.
+     */
+    explicit operator bool() const noexcept;
+
     int kill(bool allowInterrupts = true);
     int wait(bool allowInterrupts = true);
 

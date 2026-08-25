@@ -93,7 +93,7 @@ HookInstance::~HookInstance()
 {
     try {
         toHook.writeSide = -1;
-        if (pid != -1) {
+        if (pid) {
             pid.kill();
             if (onKillChild)
                 onKillChild();
