@@ -11,6 +11,7 @@
 #include "nix/store/derivations.hh"
 #include "nix/store/parsed-derivations.hh"
 #include "nix/util/processes.hh"
+#include "nix/util/muxable-pipe.hh"
 #include "nix/util/json-impls.hh"
 #include "nix/store/restricted-store.hh"
 #include "nix/store/build/derivation-env-desugar.hh"
@@ -180,6 +181,14 @@ public:
      */
     AutoCloseFD builderOut;
 
+#ifdef _WIN32
+    /**
+     * The log pipe, set by `startBuild`. `MuxablePipePollState::iterate` needs its
+     * `OVERLAPPED` state and buffer, so a `Descriptor` cannot register a child.
+     */
+    MuxablePipe * commChannel = nullptr;
+#endif
+
     /**
      * Set up build environment / sandbox, acquiring resources (e.g.
      * locks as needed). After this is run, the builder should be
@@ -244,10 +253,20 @@ struct DerivationBuilderDeleter
 
 using DerivationBuilderUnique = std::unique_ptr<DerivationBuilder, DerivationBuilderDeleter>;
 
-#ifndef _WIN32 // TODO enable `DerivationBuilder` on Windows
+/**
+ * @param ioport The worker's I/O completion port, which the log pipe is tied to.
+ */
 DerivationBuilderUnique makeDerivationBuilder(
-    LocalStore & store, std::shared_ptr<DerivationBuilderCallbacks> miscMethods, DerivationBuilderParams params);
+    LocalStore & store,
+    std::shared_ptr<DerivationBuilderCallbacks> miscMethods,
+    DerivationBuilderParams params
+#ifdef _WIN32
+    ,
+    HANDLE ioport
+#endif
+);
 
+#ifndef _WIN32 // TODO enable `ExternalDerivationBuilder` on Windows
 /**
  * @param handler Must be chosen such that it supports the given
  * derivation.
