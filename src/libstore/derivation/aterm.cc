@@ -671,7 +671,10 @@ static void unparseOutput(
     std::string_view)
 {
     s += ',';
-    printUnquotedString(s, store.printStorePath(doi.path));
+    /* Store paths need escaping: on Windows they contain backslashes, which the
+       unquoted writer emits raw and the reader mis-decodes. Byte-identical on
+       Unix, where they hold nothing `printString` escapes. */
+    printString(s, store.printStorePath(doi.path));
     s += ',';
     printUnquotedString(s, {});
     s += ',';
@@ -686,7 +689,7 @@ static void unparseOutput(
     std::string_view outputName)
 {
     s += ',';
-    printUnquotedString(s, store.printStorePath(dof.path(store, drvName, outputName)));
+    printString(s, store.printStorePath(dof.path(store, drvName, outputName)));
     s += ',';
     printUnquotedString(s, dof.ca.printMethodAlgo());
     s += ',';
@@ -795,14 +798,15 @@ std::string unparse(const Derivation<Inputs, Out> & drv, const StoreDirConfig & 
         else
             s += ',';
         s += '(';
-        printUnquotedString(s, keyToString(store, key));
+        /* `keyToString` renders a store path for the `StorePath` overload. */
+        printString(s, keyToString(store, key));
         unparseDerivedPathMapNode(store, s, node);
         s += ')';
     }
 
     s += "],"sv;
     auto paths = store.printStorePathSet(drv.inputs.srcs); // FIXME: slow
-    printUnquotedStrings(s, paths.begin(), paths.end());
+    printStrings(s, paths.begin(), paths.end());
 
     s += ',';
     printUnquotedString(s, drv.platform);
