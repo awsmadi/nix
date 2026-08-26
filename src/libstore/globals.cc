@@ -587,6 +587,12 @@ void initLibStore(bool loadConfig)
 
     initLibUtil();
 
+    /* Before `loadConfFile`, so configuration files still override the
+       environment. This cannot be done while constructing
+       `fileTransferSettings`, because an invalid value has to be rejected with
+       a throw, and a throw from a static initializer cannot be reported. */
+    fileTransferSettings.applySSLCertFileOverride();
+
     if (loadConfig)
         loadConfFile(globalConfig);
 

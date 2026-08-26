@@ -30,7 +30,22 @@ class FileTransferSettings : public Config
     void anchor() override;
 
 public:
-    FileTransferSettings();
+    /**
+     * Apply the `NIX_SSL_CERT_FILE` / `SSL_CERT_FILE` override to `caFile`.
+     *
+     * Deliberately not done while constructing `fileTransferSettings`. The
+     * value comes from the environment, so it can be invalid, and rejecting it
+     * requires throwing. A throw from a static initializer cannot be reported:
+     * on Unix it reaches `std::terminate` before `main`, and on Windows the
+     * loader absorbs it and the process dies with no output at all. Called
+     * from `initLibStore()` instead, where an `Error` is an ordinary,
+     * reportable failure.
+     *
+     * Must run before the configuration files are read, so that they keep
+     * taking precedence over the environment, as they did when this was done
+     * during construction.
+     */
+    void applySSLCertFileOverride();
 
     Setting<bool> enableHttp2{this, true, "http2", "Whether to enable HTTP/2 support."};
 
