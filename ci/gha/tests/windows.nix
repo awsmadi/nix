@@ -113,4 +113,18 @@ in
   unitTests = {
     "nix-util-tests" = fixOutput packages."nix-util-tests-x86_64-w64-mingw32".passthru.tests.run;
   };
+
+  /*
+    Compile every Windows component.
+
+    `unitTests` above builds one suite, and `nix-util-tests` links neither
+    libmain nor libstore, so a change can break the Windows build outright while
+    this file stays green. That happened: a `Pid` comparison valid only on Unix
+    left `nix-main-x86_64-w64-mingw32` failing to compile for days behind a green
+    "windows unit tests" job.
+
+    This needs no emulator and cannot be flaky -- it either compiles or it does
+    not -- so it is the cheapest useful signal available for the target.
+  */
+  crossBuild = packages."nix-everything-x86_64-w64-mingw32";
 }
