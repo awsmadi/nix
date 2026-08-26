@@ -29,6 +29,7 @@ deps_private_maybe_subproject = [
 ]
 deps_public_maybe_subproject = []
 subdir('nix-meson-build-support/subprojects')
+subdir('nix-meson-build-support/big-objs')
 
 deps_plugin_c_apis = []
 if get_option('plugin-c-api')

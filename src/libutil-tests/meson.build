@@ -22,6 +22,7 @@ deps_private_maybe_subproject = [
 ]
 deps_public_maybe_subproject = []
 subdir('nix-meson-build-support/subprojects')
+subdir('nix-meson-build-support/big-objs')
 
 subdir('nix-meson-build-support/export-all-symbols')
 subdir('nix-meson-build-support/windows-version')

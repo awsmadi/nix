@@ -37,6 +37,7 @@ deps_public_maybe_subproject = [
   dependency('nix-util'),
 ]
 subdir('nix-meson-build-support/subprojects')
+subdir('nix-meson-build-support/big-objs')
 
 can_link_symlink = false
 native_ln = find_program('ln', required : false, native : true)
