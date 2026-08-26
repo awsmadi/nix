@@ -24,6 +24,7 @@ deps_public_maybe_subproject = [
   dependency('nix-expr'),
 ]
 subdir('nix-meson-build-support/subprojects')
+subdir('nix-meson-build-support/big-objs')
 
 nlohmann_json = dependency('nlohmann_json', version : '>= 3.9')
 deps_public += nlohmann_json

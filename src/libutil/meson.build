@@ -22,6 +22,7 @@ configdata_priv = configuration_data()
 deps_private_maybe_subproject = []
 deps_public_maybe_subproject = []
 subdir('nix-meson-build-support/subprojects')
+subdir('nix-meson-build-support/big-objs')
 
 # Check for each of these functions, and create a define like `#define
 # HAVE_POSIX_FALLOCATE 1`. The `#define` is unconditional, 0 for not
