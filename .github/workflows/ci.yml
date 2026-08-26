@@ -157,6 +157,9 @@ jobs:
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         dogfood: ${{ github.event_name == 'workflow_dispatch' && inputs.dogfood || github.event_name != 'workflow_dispatch' }}
+    - name: Cross-build all Windows components
+      run: |
+        nix build --file ci/gha/tests/windows.nix crossBuild -L
     - name: Run Windows unit tests
       run: |
         nix build --file ci/gha/tests/windows.nix unitTests.nix-util-tests -L
