@@ -21,13 +21,17 @@ let
         } 2>&1 | ansi2txt
       '';
     });
-in
-
-{
   unitTests = {
     "nix-util-tests" = fixOutput packages."nix-util-tests-x86_64-w64-mingw32".passthru.tests.run;
   };
 
   # `unitTests` builds one suite, which links neither libmain nor libstore.
   crossBuild = packages."nix-everything-x86_64-w64-mingw32";
+in
+
+{
+  inherit unitTests crossBuild;
+
+  # Everything above, so the workflow names one attribute.
+  all = pkgs.linkFarmFromDrvs "nix-windows-ci" ([ crossBuild ] ++ pkgs.lib.attrValues unitTests);
 }
