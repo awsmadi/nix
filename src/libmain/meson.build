@@ -28,6 +28,7 @@ deps_public_maybe_subproject = [
   dependency('nix-expr'),
 ]
 subdir('nix-meson-build-support/subprojects')
+subdir('nix-meson-build-support/big-objs')
 
 pubsetbuf_test = '''
 #include <iostream>

@@ -24,6 +24,7 @@ deps_public_maybe_subproject = [
   dependency('nix-util-c'),
 ]
 subdir('nix-meson-build-support/subprojects')
+subdir('nix-meson-build-support/big-objs')
 
 subdir('nix-meson-build-support/common')
 

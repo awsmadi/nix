@@ -24,6 +24,7 @@ deps_public_maybe_subproject = [
   dependency('nix-store-c'),
 ]
 subdir('nix-meson-build-support/subprojects')
+subdir('nix-meson-build-support/big-objs')
 
 rapidcheck = dependency('rapidcheck')
 deps_public += rapidcheck
