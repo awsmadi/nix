@@ -299,11 +299,6 @@ private:
     static inline const std::string defaultMsg = "path '%s' is a symlink, which is not allowed";
 };
 
-/**
- * Exception thrown when accessing a filtered path (see
- * `FilteringSourceAccessor`).
- */
-MakeError(RestrictedPathError, Error);
 
 /**
  * Return an accessor for the root filesystem.

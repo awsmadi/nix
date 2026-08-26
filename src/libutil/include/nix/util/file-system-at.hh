@@ -155,8 +155,6 @@ std::optional<PosixStat> maybeFstatat(Descriptor dirFd, const OsCanonPath & path
  */
 PosixStat fstatat(Descriptor dirFd, const OsCanonPath & path);
 
-#endif
-
 /**
  * Read a symlink relative to a directory file descriptor.
  * On Linux, this also supports reading from O_PATH descriptors with CanonPath::root.

@@ -154,7 +154,7 @@ static AutoCloseFD openFileEnsureBeneathNoSymlinksIterative(
     assert(nrComponents >= 1);
     auto components = std::views::take(path, nrComponents - 1); /* Everything but last component */
     auto getParentFd = [&]() { return parentFd ? parentFd.get() : dirFd; };
-    auto currentRelPath = CanonPath::root;
+    auto currentRelPath = OsCanonPath{};
 
     /* Helper to construct OsCanonPath from components up to (and including) the given iterator */
     auto pathUpTo = [&](auto it) {
