@@ -169,10 +169,10 @@ struct ExecChildParams
     int maxKeptFD = relocatedErrorPipeFD;
     for (size_t i = 0; i < params.numRedirections; ++i) {
         const auto & redirection = params.redirections[i];
-        if (::dup2(redirection.from, redirection.to) == -1)
+        if (::dup2(redirection.sourceFd, redirection.targetFd) == -1)
             dieWithErrno("dupping redirected fd");
-        if (redirection.to > maxKeptFD)
-            maxKeptFD = redirection.to;
+        if (redirection.targetFd > maxKeptFD)
+            maxKeptFD = redirection.targetFd;
     }
 
 #if HAVE_CLOSEFROM
@@ -193,7 +193,7 @@ struct ExecChildParams
     for (int fd = relocatedErrorPipeFD + 1; fd < maxKeptFD; ++fd) {
         bool isTarget = false;
         for (size_t i = 0; i < params.numRedirections; ++i)
-            if (params.redirections[i].to == fd)
+            if (params.redirections[i].targetFd == fd)
                 isTarget = true;
         if (!isTarget)
             ::close(fd); /* Ignore errors; it may not have been open. */

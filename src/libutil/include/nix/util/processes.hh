@@ -147,22 +147,27 @@ struct RunOptions
      * number in the child, for descriptors other than stdin/stdout/stderr
      * (which have their own fields).
      *
-     * `from` is the descriptor in *this* process to duplicate; `to` is the
-     * number it will have in the child. So `{.from = pipe.writeSide.get(),
-     * .to = 4}` makes the child's fd 4 a copy of that pipe.
+     * `sourceFd` is the descriptor in *this* process to duplicate;
+     * `targetFd` is the number it will have in the child. So
+     * `{.sourceFd = pipe.writeSide.get(), .targetFd = 4}` makes the child's
+     * fd 4 a copy of that pipe.
+     *
+     * Named this way rather than `from`/`to` deliberately: those read
+     * ambiguously enough that the original implementation duplicated them
+     * the opposite way round from what its own error message claimed.
      *
      * Constraints, checked by `startProgram` before forking:
      *
-     * - `to` must be greater than `STDERR_FILENO`; use `standardOut` and
+     * - `targetFd` must be greater than `STDERR_FILENO`; use `standardOut` and
      *   `mergeStderrToStdout` for the standard streams.
-     * - No `to` may appear as another redirection's `from`, because the
+     * - No `targetFd` may appear as another redirection's `sourceFd`, because the
      *   duplications are applied in order and would clobber each other.
-     * - On Linux `to` may not be `STDERR_FILENO + 1`, which the vfork child
+     * - On Linux `targetFd` may not be `STDERR_FILENO + 1`, which the vfork child
      *   reserves for its error-reporting pipe.
      */
     struct Redirection
     {
-        int from, to;
+        int sourceFd, targetFd;
     };
 
     std::filesystem::path program;

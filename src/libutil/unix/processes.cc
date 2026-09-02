@@ -360,8 +360,8 @@ Pid startProgram(const RunOptions & options, std::shared_ptr<Pipe> out)
                 if (dup2(STDOUT_FILENO, STDERR_FILENO) == -1)
                     throw SysError("cannot dup stdout into stderr");
             for (auto redirection : options.redirections) {
-                if (dup2(redirection.from, redirection.to) == -1) {
-                    throw SysError("dupping fd %i onto fd %i", redirection.from, redirection.to);
+                if (dup2(redirection.sourceFd, redirection.targetFd) == -1) {
+                    throw SysError("dupping fd %i onto fd %i", redirection.sourceFd, redirection.targetFd);
                 }
             }
 
@@ -394,7 +394,7 @@ Pid startProgram(const RunOptions & options, std::shared_ptr<Pipe> out)
             std::vector<Descriptor> keepFDs;
             keepFDs.reserve(options.redirections.size());
             for (auto redirection : options.redirections)
-                keepFDs.push_back(redirection.to);
+                keepFDs.push_back(redirection.targetFd);
             unix::closeExtraFDs(keepFDs);
 
             if (options.lookupPath)

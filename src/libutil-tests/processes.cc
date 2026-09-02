@@ -303,7 +303,7 @@ TEST(runProgram2, redirectionsReachTheChild)
         .lookupPath = false,
         .args = {OS_STR("__util_test_spawn_redirections")},
         .environment = OsStringMap{{OS_STR("NIX_CHILD_WRITE_FDS"), OS_STR("4:alpha,5:beta")}},
-        .redirections = {{.from = aWrite.get(), .to = 4}, {.from = bWrite.get(), .to = 5}},
+        .redirections = {{.sourceFd = aWrite.get(), .targetFd = 4}, {.sourceFd = bWrite.get(), .targetFd = 5}},
     }));
 
     /* Drop our own write ends, or the reads below would not see EOF. */
@@ -328,16 +328,22 @@ TEST(runProgram2, redirectionsDoNotKeepUnrelatedFDsOpen)
     auto self = getSelfExe();
     ASSERT_TRUE(self);
 
-    int a[2];
+    int a[2], b[2];
     ASSERT_NE(::pipe(a), -1);
+    ASSERT_NE(::pipe(b), -1);
     AutoCloseFD aRead = a[0], aWrite = relocateHigh(AutoCloseFD{a[1]}, 30);
+    AutoCloseFD bRead = b[0], bWrite = relocateHigh(AutoCloseFD{b[1]}, 31);
 
-    /* A descriptor that is neither a source nor a target. Exempting the targets
-       must not degrade into exempting everything above stderr. */
+    /* Targets 4 and 9, with an unrelated descriptor at 6 — strictly between
+       them — and another at 25, above both. That placement is the point: the
+       child sweeps in two stages, a range close above the highest target and an
+       individual walk below it, and only a descriptor inside the target range
+       can reach the second one. A spare above the highest target exercises the
+       first stage and would pass even if the second were removed entirely. */
     int spare[2];
     ASSERT_NE(::pipe(spare), -1);
-    AutoCloseFD spareRead = relocateHigh(AutoCloseFD{spare[0]}, 25);
-    AutoCloseFD spareWrite = relocateHigh(AutoCloseFD{spare[1]}, 26);
+    AutoCloseFD spareInside = relocateHigh(AutoCloseFD{spare[0]}, 6);
+    AutoCloseFD spareAbove = relocateHigh(AutoCloseFD{spare[1]}, 25);
 
     ASSERT_NO_THROW(runProgram2({
         .program = *self,
@@ -345,10 +351,10 @@ TEST(runProgram2, redirectionsDoNotKeepUnrelatedFDsOpen)
         .args = {OS_STR("__util_test_spawn_redirections")},
         .environment =
             OsStringMap{
-                {OS_STR("NIX_CHILD_WRITE_FDS"), OS_STR("4:alpha")},
-                {OS_STR("NIX_CHILD_FDS_SHOULD_BE_CLOSED"), OS_STR("25,26")},
+                {OS_STR("NIX_CHILD_WRITE_FDS"), OS_STR("4:alpha,9:beta")},
+                {OS_STR("NIX_CHILD_FDS_SHOULD_BE_CLOSED"), OS_STR("6,25")},
             },
-        .redirections = {{.from = aWrite.get(), .to = 4}},
+        .redirections = {{.sourceFd = aWrite.get(), .targetFd = 4}, {.sourceFd = bWrite.get(), .targetFd = 9}},
     }));
 }
 
@@ -360,7 +366,7 @@ TEST(startProgram, rejectsRedirectionOntoAStandardStream)
         {
             runProgram2({
                 .program = "/nonexistent",
-                .redirections = {{.from = 30, .to = STDOUT_FILENO}},
+                .redirections = {{.sourceFd = 30, .targetFd = STDOUT_FILENO}},
             });
         },
         UsageError);
@@ -374,7 +380,7 @@ TEST(startProgram, rejectsSourceThatIsAnotherTarget)
         {
             runProgram2({
                 .program = "/nonexistent",
-                .redirections = {{.from = 30, .to = 7}, {.from = 7, .to = 8}},
+                .redirections = {{.sourceFd = 30, .targetFd = 7}, {.sourceFd = 7, .targetFd = 8}},
             });
         },
         UsageError);

@@ -15,10 +15,10 @@ void ExecError::anchor() {}
 void unix::validateRedirections(const RunOptions & options)
 {
     for (auto redirection : options.redirections) {
-        if (redirection.to <= STDERR_FILENO)
+        if (redirection.targetFd <= STDERR_FILENO)
             throw UsageError(
                 "redirection target fd %i is a standard stream; use 'standardOut' or 'mergeStderrToStdout' instead",
-                redirection.to);
+                redirection.targetFd);
 
 #ifdef __linux__
         /* Kept in step with `relocatedErrorPipeFD` in `linux/processes.cc`. The
@@ -26,18 +26,18 @@ void unix::validateRedirections(const RunOptions & options)
            so that number is unusable as either end of a redirection: as a target
            it would overwrite the pipe, and as a source it would itself be
            overwritten by the relocation. */
-        if (redirection.to == STDERR_FILENO + 1 || redirection.from == STDERR_FILENO + 1)
+        if (redirection.targetFd == STDERR_FILENO + 1 || redirection.sourceFd == STDERR_FILENO + 1)
             throw UsageError(
                 "fd %i cannot take part in a redirection; it is reserved for the child's error-reporting pipe",
                 STDERR_FILENO + 1);
 #endif
 
         for (auto other : options.redirections)
-            if (other.from == redirection.to)
+            if (other.sourceFd == redirection.targetFd)
                 throw UsageError(
                     "fd %i is both a redirection target and the source of another redirection, "
                     "which the in-order duplication would clobber",
-                    redirection.to);
+                    redirection.targetFd);
     }
 }
 
