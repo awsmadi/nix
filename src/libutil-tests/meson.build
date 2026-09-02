@@ -63,6 +63,7 @@ sources = files(
   'json-utils.cc',
   'local-keys.cc',
   'logging.cc',
+  'logical-path.cc',
   'lru-cache.cc',
   'main.cc',
   'memo.cc',

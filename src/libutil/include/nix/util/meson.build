@@ -60,6 +60,7 @@ headers = [ config_pub_h ] + files(
   'json-utils.hh',
   'library-versions.hh',
   'logging.hh',
+  'logical-path.hh',
   'lru-cache.hh',
   'memo.hh',
   'memory-source-accessor.hh',
