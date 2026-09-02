@@ -103,5 +103,6 @@ headers = [ config_pub_h ] + files(
   'users.hh',
   'util.hh',
   'variant-wrapper.hh',
+  'wtf8.hh',
   'xml-writer.hh',
 )

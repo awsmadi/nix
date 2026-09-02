@@ -85,6 +85,7 @@ sources = files(
   'topo-sort.cc',
   'url.cc',
   'util.cc',
+  'wtf8.cc',
   'xml-writer.cc',
 )
 
