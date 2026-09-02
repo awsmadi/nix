@@ -95,6 +95,46 @@ static int spawnTestForLeakedFDsMain()
 
 #endif
 
+#ifndef _WIN32
+
+/**
+ * Write to each descriptor named in `NIX_CHILD_WRITE_FDS` (as `fd:text`
+ * pairs) and confirm every descriptor named in `NIX_CHILD_FDS_SHOULD_BE_CLOSED`
+ * is closed.
+ *
+ * This is the observation point for `RunOptions::Redirection`. Both halves
+ * matter: the writes prove the redirection survived until `exec`, and the
+ * closed-check proves exempting the targets did not accidentally leak the
+ * sources or anything else above stderr.
+ */
+static int spawnRedirectionsMain()
+{
+    for (const auto & pair :
+         nix::splitString<std::vector<std::string>>(nix::getEnv("NIX_CHILD_WRITE_FDS").value_or(""), ",")) {
+        if (pair.empty())
+            continue;
+        auto colon = pair.find(':');
+        if (colon == std::string::npos)
+            return EXIT_FAILURE;
+        int fd = std::stoi(pair.substr(0, colon));
+        auto text = pair.substr(colon + 1);
+        if (::write(fd, text.data(), text.size()) != static_cast<ssize_t>(text.size()))
+            return EXIT_FAILURE;
+    }
+
+    for (const auto & s :
+         nix::splitString<std::vector<std::string>>(nix::getEnv("NIX_CHILD_FDS_SHOULD_BE_CLOSED").value_or(""), ",")) {
+        if (s.empty())
+            continue;
+        if (::close(std::stoi(s)) != -1 || errno != EBADF)
+            return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
+}
+
+#endif
+
 int main(int argc, char ** argv)
 {
     /* This will get re-execed into from libutil-tests/processes.cc. */
@@ -118,6 +158,10 @@ int main(int argc, char ** argv)
         } else if (argv1 == "__util_test_spawn_leaked_fds") {
 #ifndef _WIN32
             return spawnTestForLeakedFDsMain();
+#endif
+        } else if (argv1 == "__util_test_spawn_redirections") {
+#ifndef _WIN32
+            return spawnRedirectionsMain();
 #endif
         }
     }

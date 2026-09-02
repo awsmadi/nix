@@ -255,6 +255,133 @@ TEST(runProgram, argv0IsHonoured)
 
 #endif
 
+#ifndef _WIN32 /* `RunOptions::redirections` is Unix-only. */
+
+/* ----------------------------------------------------------------------------
+ * RunOptions::redirections
+ *
+ * Descriptors above stderr are the only reason this field exists, and they are
+ * also exactly what the child's descriptor sweep is there to close. So the
+ * ordering between "wire the redirections" and "close everything else" is the
+ * whole behaviour, and it is not observable from the parent — the child has to
+ * be asked.
+ * --------------------------------------------------------------------------*/
+
+namespace {
+
+/**
+ * Move `fd` to a descriptor well clear of the low numbers, so that a test can
+ * use 4 and 5 as redirection *targets* without colliding with whatever
+ * `::pipe` happened to hand out for the *sources*. Such a collision is
+ * rejected by `validateRedirections`, which would make the test's outcome
+ * depend on the process's descriptor allocation rather than on the code.
+ */
+static AutoCloseFD relocateHigh(AutoCloseFD fd, int to)
+{
+    EXPECT_NE(::dup2(fd.get(), to), -1);
+    return AutoCloseFD{to};
+}
+
+} // namespace
+
+TEST(runProgram2, redirectionsReachTheChild)
+{
+    auto self = getSelfExe();
+    ASSERT_TRUE(self);
+
+    int a[2], b[2];
+    ASSERT_NE(::pipe(a), -1);
+    ASSERT_NE(::pipe(b), -1);
+    AutoCloseFD aRead = a[0], aWrite = relocateHigh(AutoCloseFD{a[1]}, 30);
+    AutoCloseFD bRead = b[0], bWrite = relocateHigh(AutoCloseFD{b[1]}, 31);
+
+    /* Fds 4 and 5 specifically: that is what `hook-instance.cc` wires, and it
+       is above the `MAX_KEPT_FD` of the argument-less `closeExtraFDs`, so a
+       sweep that does not exempt them takes both away before the exec. */
+    ASSERT_NO_THROW(runProgram2({
+        .program = *self,
+        .lookupPath = false,
+        .args = {OS_STR("__util_test_spawn_redirections")},
+        .environment = OsStringMap{{OS_STR("NIX_CHILD_WRITE_FDS"), OS_STR("4:alpha,5:beta")}},
+        .redirections = {{.from = aWrite.get(), .to = 4}, {.from = bWrite.get(), .to = 5}},
+    }));
+
+    /* Drop our own write ends, or the reads below would not see EOF. */
+    aWrite.close();
+    bWrite.close();
+
+    auto drain = [](int fd) {
+        std::string s;
+        char buf[64];
+        ssize_t n;
+        while ((n = ::read(fd, buf, sizeof(buf))) > 0)
+            s.append(buf, n);
+        return s;
+    };
+
+    ASSERT_EQ(drain(aRead.get()), "alpha");
+    ASSERT_EQ(drain(bRead.get()), "beta");
+}
+
+TEST(runProgram2, redirectionsDoNotKeepUnrelatedFDsOpen)
+{
+    auto self = getSelfExe();
+    ASSERT_TRUE(self);
+
+    int a[2];
+    ASSERT_NE(::pipe(a), -1);
+    AutoCloseFD aRead = a[0], aWrite = relocateHigh(AutoCloseFD{a[1]}, 30);
+
+    /* A descriptor that is neither a source nor a target. Exempting the targets
+       must not degrade into exempting everything above stderr. */
+    int spare[2];
+    ASSERT_NE(::pipe(spare), -1);
+    AutoCloseFD spareRead = relocateHigh(AutoCloseFD{spare[0]}, 25);
+    AutoCloseFD spareWrite = relocateHigh(AutoCloseFD{spare[1]}, 26);
+
+    ASSERT_NO_THROW(runProgram2({
+        .program = *self,
+        .lookupPath = false,
+        .args = {OS_STR("__util_test_spawn_redirections")},
+        .environment =
+            OsStringMap{
+                {OS_STR("NIX_CHILD_WRITE_FDS"), OS_STR("4:alpha")},
+                {OS_STR("NIX_CHILD_FDS_SHOULD_BE_CLOSED"), OS_STR("25,26")},
+            },
+        .redirections = {{.from = aWrite.get(), .to = 4}},
+    }));
+}
+
+TEST(startProgram, rejectsRedirectionOntoAStandardStream)
+{
+    /* `standardOut` and `mergeStderrToStdout` own the standard streams; a
+       redirection onto one of them would fight with them silently. */
+    ASSERT_THROW(
+        {
+            runProgram2({
+                .program = "/nonexistent",
+                .redirections = {{.from = 30, .to = STDOUT_FILENO}},
+            });
+        },
+        UsageError);
+}
+
+TEST(startProgram, rejectsSourceThatIsAnotherTarget)
+{
+    /* The duplications are applied in order with no bookkeeping, so this would
+       silently give the second redirection the first one's descriptor. */
+    ASSERT_THROW(
+        {
+            runProgram2({
+                .program = "/nonexistent",
+                .redirections = {{.from = 30, .to = 7}, {.from = 7, .to = 8}},
+            });
+        },
+        UsageError);
+}
+
+#endif
+
 #undef NIX_EXECUTABLE_EXTENSION
 #undef NIX_SPAWN_EXCEPTION
 
