@@ -142,6 +142,24 @@ std::string runProgram(
 
 struct RunOptions
 {
+    /**
+     * Wire one of the parent's descriptors onto a specific descriptor
+     * number in the child, for descriptors other than stdin/stdout/stderr
+     * (which have their own fields).
+     *
+     * `from` is the descriptor in *this* process to duplicate; `to` is the
+     * number it will have in the child. So `{.from = pipe.writeSide.get(),
+     * .to = 4}` makes the child's fd 4 a copy of that pipe.
+     *
+     * Constraints, checked by `startProgram` before forking:
+     *
+     * - `to` must be greater than `STDERR_FILENO`; use `standardOut` and
+     *   `mergeStderrToStdout` for the standard streams.
+     * - No `to` may appear as another redirection's `from`, because the
+     *   duplications are applied in order and would clobber each other.
+     * - On Linux `to` may not be `STDERR_FILENO + 1`, which the vfork child
+     *   reserves for its error-reporting pipe.
+     */
     struct Redirection
     {
         int from, to;
@@ -171,7 +189,16 @@ std::pair<int, std::string> runProgram(RunOptions && options);
 
 void runProgram2(const RunOptions & options);
 
+#ifndef _WIN32
+/**
+ * Start a program and return its pid without waiting for it, applying the
+ * same `RunOptions` that `runProgram2` does. `out` must have been created
+ * iff `options.standardOut` is set; the caller owns draining and waiting.
+ *
+ * Not available on Windows, which has no equivalent child-setup path.
+ */
 Pid startProgram(const RunOptions & options, std::shared_ptr<Pipe> out);
+#endif
 
 class ExecError final : public CloneableError<ExecError, Error>
 {
