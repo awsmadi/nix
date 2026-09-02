@@ -1,6 +1,8 @@
 #include "nix/util/processes.hh"
 #include "nix/util/current-process.hh"
 #include "nix/util/environment-variables.hh"
+#include "nix/util/file-descriptor.hh"
+#include "nix/util/serialise.hh"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -381,6 +383,55 @@ TEST(startProgram, rejectsSourceThatIsAnotherTarget)
             runProgram2({
                 .program = "/nonexistent",
                 .redirections = {{.sourceFd = 30, .targetFd = 7}, {.sourceFd = 7, .targetFd = 8}},
+            });
+        },
+        UsageError);
+}
+
+TEST(startProgram, standardOutFdReceivesStdout)
+{
+    /* `standardOut` collects stdout into a `Sink`. A caller that already owns
+       the write end of a pipe wants the descriptor wired directly instead, and
+       `Redirection` refuses to express it because `targetFd` may not be a
+       standard stream. Without `standardOutFd` such a caller has to drop back
+       to `startProcess` and a hand-written `dup2`, which is what
+       `SSHMaster::startMaster` did. */
+    auto self = getSelfExe();
+    ASSERT_TRUE(self);
+
+    Pipe out;
+    out.create();
+
+    Pid pid = startProgram(
+        RunOptions{
+            .program = *self,
+            .lookupPath = false,
+            .args = {OS_STR("__util_test_spawn_trivial")},
+            .standardOutFd = out.writeSide.get(),
+        },
+        nullptr);
+
+    /* Drop our copy, or the read below never sees EOF. */
+    out.writeSide.close();
+
+    StringSink sink;
+    drainFD(out.readSide.get(), sink);
+
+    ASSERT_EQ(sink.s, "hello");
+    ASSERT_TRUE(statusOk(pid.wait()));
+}
+
+TEST(startProgram, rejectsBothStandardOutAndStandardOutFd)
+{
+    /* The child has one stdout, and the two options disagree about who owns
+       it. Honouring either silently would discard the other's intent. */
+    StringSink sink;
+    ASSERT_THROW(
+        {
+            runProgram2({
+                .program = "/nonexistent",
+                .standardOut = &sink,
+                .standardOutFd = STDOUT_FILENO + 30,
             });
         },
         UsageError);

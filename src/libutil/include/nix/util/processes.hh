@@ -181,9 +181,34 @@ struct RunOptions
     std::optional<std::filesystem::path> chdir;
     std::optional<OsStringMap> environment;
     Sink * standardOut = nullptr;
+
+    /**
+     * Wire an existing descriptor onto the child's stdout, instead of
+     * collecting stdout into a `Sink` via `standardOut`.
+     *
+     * `Redirection` cannot express this, because it deliberately refuses any
+     * `targetFd` at or below `STDERR_FILENO`. Callers that already own the
+     * write end of a pipe want exactly this and nothing else.
+     *
+     * Mutually exclusive with `standardOut`; setting both is a `UsageError`,
+     * since the child has one stdout and the two options disagree about who
+     * owns it.
+     */
+    std::optional<Descriptor> standardOutFd;
+
     bool mergeStderrToStdout = false;
     bool isInteractive = false;
     std::vector<Redirection> redirections;
+
+    /**
+     * Kill the child when this process dies (`PR_SET_PDEATHSIG` on Linux).
+     *
+     * Defaults to true, matching what `startProgram` did when this was
+     * hardcoded. Long-lived helpers that must outlive the process which
+     * spawned them — an `ssh -M` control master, for instance — set this
+     * false, which is why `ProcessOptions` has always had the same field.
+     */
+    bool dieWithParent = true;
 #ifdef __linux__
     std::set<long> caps;
 #endif

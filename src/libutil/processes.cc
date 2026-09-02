@@ -14,13 +14,19 @@ void ExecError::anchor() {}
 
 void unix::validateRedirections(const RunOptions & options)
 {
+    /* The child has one stdout. `standardOut` wants to collect it into a sink,
+       `standardOutFd` wants it wired to a descriptor the caller already owns,
+       and honouring either one silently would discard the other's intent. */
+    if (options.standardOut && options.standardOutFd)
+        throw UsageError("'standardOut' and 'standardOutFd' are mutually exclusive; the child has only one stdout");
+
     for (auto redirection : options.redirections) {
         if (redirection.targetFd <= STDERR_FILENO)
             throw UsageError(
                 "redirection target fd %i is a standard stream; use 'standardOut' or 'mergeStderrToStdout' instead",
                 redirection.targetFd);
 
-#ifdef __linux__
+#  ifdef __linux__
         /* Kept in step with `relocatedErrorPipeFD` in `linux/processes.cc`. The
            vfork child moves its error pipe there before touching anything else,
            so that number is unusable as either end of a redirection: as a target
@@ -30,7 +36,7 @@ void unix::validateRedirections(const RunOptions & options)
             throw UsageError(
                 "fd %i cannot take part in a redirection; it is reserved for the child's error-reporting pipe",
                 STDERR_FILENO + 1);
-#endif
+#  endif
 
         for (auto other : options.redirections)
             if (other.sourceFd == redirection.targetFd)

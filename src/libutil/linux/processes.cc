@@ -238,11 +238,13 @@ struct ExecChildParams
            closure and many features we do not need. */
         static constexpr uint32_t LINUX_CAPABILITY_VERSION_3 = 0x20080522;
         static constexpr uint32_t LINUX_CAPABILITY_U32S_3 = 2;
+
         struct user_cap_header_struct
         {
             uint32_t version;
             int pid;
         } hdr = {LINUX_CAPABILITY_VERSION_3, 0};
+
         struct user_cap_data_struct
         {
             uint32_t effective;
@@ -371,7 +373,7 @@ Pid startProgram(const RunOptions & options, std::shared_ptr<Pipe> out)
         .args = args.data(),
         .mergeStderrToStdout = options.mergeStderrToStdout,
         .lookupPath = options.lookupPath,
-        .stdoutFd = options.standardOut ? out->writeSide.get() : INVALID_DESCRIPTOR,
+        .stdoutFd = options.standardOut ? out->writeSide.get() : options.standardOutFd.value_or(INVALID_DESCRIPTOR),
         .errorPipe = childErrorPipe.writeSide.get(),
         .setGid = options.gid.has_value(),
         /* The default is not used, but a bit sketchy to leave zero initialised so "nobody". */
@@ -379,7 +381,7 @@ Pid startProgram(const RunOptions & options, std::shared_ptr<Pipe> out)
         .setUid = options.uid.has_value(),
         /* The default is not used, but a bit sketchy to leave zero initialised so "nobody". */
         .uid = options.uid.value_or(65534),
-        .dieWithParent = true, /* TODO: Maybe we might want to expose this in RunOptions? */
+        .dieWithParent = options.dieWithParent,
         .redirections = options.redirections.data(),
         .numRedirections = options.redirections.size(),
         .caps = caps.data(),

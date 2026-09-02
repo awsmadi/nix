@@ -347,6 +347,7 @@ Pid startProgram(const RunOptions & options, std::shared_ptr<Pipe> out)
     unix::validateRedirections(options);
 
     ProcessOptions processOptions;
+    processOptions.dieWithParent = options.dieWithParent;
 
     auto suspension = logger->suspendIf(options.isInteractive);
 
@@ -354,8 +355,12 @@ Pid startProgram(const RunOptions & options, std::shared_ptr<Pipe> out)
         [&] {
             if (options.environment)
                 replaceEnv(*options.environment);
-            if (options.standardOut && dup2(out->writeSide.get(), STDOUT_FILENO) == -1)
-                throw SysError("dupping stdout");
+            /* Either the `Sink` path owns stdout or the caller handed us a
+               descriptor for it; `validateRedirections` has already rejected
+               both being set at once. */
+            if (auto stdoutFd = options.standardOut ? std::optional{out->writeSide.get()} : options.standardOutFd)
+                if (dup2(*stdoutFd, STDOUT_FILENO) == -1)
+                    throw SysError("dupping stdout");
             if (options.mergeStderrToStdout)
                 if (dup2(STDOUT_FILENO, STDERR_FILENO) == -1)
                     throw SysError("cannot dup stdout into stderr");
