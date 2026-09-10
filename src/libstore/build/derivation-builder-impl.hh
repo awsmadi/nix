@@ -8,6 +8,10 @@
 #  include "nix/store/user-lock.hh"
 #endif
 
+#include <atomic>
+#include <list>
+#include <thread>
+
 namespace nix {
 
 /**
@@ -95,6 +99,21 @@ protected:
         return store->toRealPath(p);
     }
 
+    /**
+     * Whether a path may be referenced by outputs of this build, checking
+     * both the input closure and paths added at runtime through recursive
+     * Nix (`RestrictionContext::addDependency`, tracked in `state_`).
+     */
+    bool isAllowed(const StorePath & path) override
+    {
+        if (inputPaths.count(path))
+            return true;
+        auto state(state_.lock());
+        auto iter = state->addedPaths.find(path);
+        if (iter == state->addedPaths.end())
+            return false;
+        return iter->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+    }
 
 public:
 
@@ -117,6 +136,86 @@ public:
     Sync<OutputPathMap> submittedOutputs;
 
     SingleDrvOutputs checkSubmittedOutputs(LocalStore & localStore) override;
+
+    /**
+     * Record an output submitted by a recursive-nix client.
+     */
+    void submitOutput(const SingleDerivedPath & path, const OutputName & output) override;
+
+protected:
+
+    /**
+     * The recursive Nix daemon socket.
+     */
+    AutoCloseFD daemonSocket;
+
+    /**
+     * The daemon main thread.
+     */
+    std::thread daemonThread;
+
+    struct DaemonWorkerState
+    {
+        std::thread thread;
+        ref<std::atomic_flag> done;
+    };
+
+    /**
+     * The daemon worker threads.
+     */
+    std::list<DaemonWorkerState> daemonWorkerThreads;
+
+    /**
+     * Start an in-process nix daemon thread for recursive-nix.
+     *
+     * Platform-neutral apart from the three hooks below.
+     */
+    void startDaemon();
+
+    /**
+     * Stop the in-process nix daemon thread.
+     * @see startDaemon
+     */
+    void stopDaemon();
+
+    /**
+     * Where the build directory appears from the builder's point of view.
+     *
+     * A sandbox can mount it somewhere else; without one it is just `tmpDir`.
+     */
+    virtual std::filesystem::path tmpDirInSandbox()
+    {
+        return tmpDir;
+    }
+
+    /**
+     * Make the daemon socket reachable by whoever runs the builder.
+     *
+     * On Unix that means handing it to the build user. Windows has no build
+     * users, so there is nothing to do.
+     */
+    virtual void prepareDaemonSocket(const std::filesystem::path & path) {}
+
+    /**
+     * Where the builder should reach the recursive Nix daemon, once
+     * `startDaemon` has bound the socket.
+     *
+     * `startDaemon` cannot write it into the environment itself: Unix keeps a
+     * `StringMap` it mutates, while Windows builds an `OsString` block from
+     * scratch. Each injects this instead.
+     */
+    std::optional<std::string> daemonRemoteUri;
+
+    /**
+     * Whether the outputs are being submitted by the builder rather than
+     * produced by it, which gates on a different experimental feature.
+     *
+     * Only the Unix builder supports dynamic derivations so far.
+     */
+    virtual bool usingSubmittedOutputs()
+    {
+        return false;
+    }
 };
 
 } // namespace nix

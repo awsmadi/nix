@@ -10,8 +10,19 @@
 #include "nix/util/file-system.hh"
 #include "nix/util/git.hh"
 #include "nix/util/processes.hh"
+#include "nix/util/signals.hh"
 #include "nix/util/source-accessor.hh"
 #include "nix/util/topo-sort.hh"
+#include "nix/util/unix-domain-socket.hh"
+#include "nix/util/url.hh"
+
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <afunix.h>
+#else
+#  include <sys/socket.h>
+#  include <sys/un.h>
+#endif
 
 namespace nix {
 
@@ -764,6 +775,219 @@ SingleDrvOutputs DerivationBuilderImpl::checkSubmittedOutputs(LocalStore & local
     }
 
     return builtOutputs;
+}
+
+void DerivationBuilderImpl::startDaemon()
+{
+    if (usingSubmittedOutputs()) {
+        experimentalFeatureSettings.require(Xp::DynamicDerivations);
+    } else {
+        experimentalFeatureSettings.require(Xp::RecursiveNix);
+    }
+
+    auto storeForDaemon = this->store->makeRecursiveNixStore(*this);
+
+    state_.lock()->addedPaths.clear();
+
+    auto socketName = ".nix-socket";
+    std::filesystem::path socketPath = tmpDir / socketName;
+    /* Spell the path the way `StoreReference::parse` expects, rather than
+       concatenating a native path. On Windows the native form is
+       `C:\...\.nix-socket`, and `unix://C:\...` is not a parseable store URI:
+       the backslashes make `parseURL` throw, the fallback chain then reads
+       `C:\...` as an authority, and the builder's nested `nix` dies with
+       "Cannot parse Nix store". `pathToUrlPath` emits the drive letter as a
+       leading segment (giving `/C:/...`, as `store-reference` tests expect)
+       and `encodeUrlPath` escapes characters a username may contain, such as
+       a space. On Unix this yields the same `unix:///tmp/...` as before. */
+    daemonRemoteUri = "unix://" + encodeUrlPath(pathToUrlPath(tmpDirInSandbox() / socketName));
+
+    daemonSocket = createUnixDomainSocket(socketPath, 0600);
+
+    prepareDaemonSocket(socketPath);
+
+    daemon::RecursiveFlag recursiveFlag;
+    if (usingSubmittedOutputs()) {
+        recursiveFlag = daemon::RecursiveFlag::RecursiveSubmitted;
+    } else {
+        recursiveFlag = daemon::RecursiveFlag::Recursive;
+    }
+
+    daemonThread = std::thread([this, storeForDaemon, recursiveFlag]() {
+        try {
+            while (true) {
+
+                /* Accept a connection. */
+                struct sockaddr_un remoteAddr;
+                /* Winsock's `accept` writes the length through an `int *`;
+                   POSIX through a `socklen_t *`. */
+#ifdef _WIN32
+                int
+#else
+                socklen_t
+#endif
+                    remoteAddrLen = sizeof(remoteAddr);
+
+                AutoCloseFD remote =
+                    fromSocket(accept(toSocket(daemonSocket.get()), (struct sockaddr *) &remoteAddr, &remoteAddrLen));
+                if (!remote) {
+                    NativeSysError error("accepting connection");
+#ifdef _WIN32
+                    /* `error.is(std::errc::...)` can't classify these: libstdc++'s
+                       `std::system_category` does not fold Winsock codes into the
+                       generic `errc` values it recognizes on Windows, so they
+                       never match there. Compare the raw code instead.
+                       `WSAGetLastError` and `GetLastError` share the same
+                       thread-local slot, so the value `NativeSysError` already
+                       captured above is the right one to check. `WSAEWOULDBLOCK`
+                       is deliberately not treated as "retry": this listener is
+                       blocking, unlike the non-blocking socket that makes `EAGAIN`
+                       meaningful on the Unix side below. The two branches are not
+                       a mirror image of each other: Winsock documents
+                       `WSAECONNRESET` for `accept` itself (a peer that reset the
+                       connection before we finished accepting it, which does not
+                       indicate the listener is going away), while
+                       `WSAECONNABORTED` is documented for `recv`/`send`, not
+                       `accept` --- it is kept in the shutdown set defensively,
+                       since a socket that can never produce it is harmless to
+                       check for. */
+                    if (error.lastError == WSAEINTR || error.lastError == WSAECONNRESET)
+                        continue;
+                    if (error.lastError == WSAEINVAL || error.lastError == WSAECONNABORTED
+                        || error.lastError == WSAENOTSOCK)
+                        break;
+#else
+                    if (error.is(std::errc::interrupted) || error.is(std::errc::resource_unavailable_try_again))
+                        continue;
+                    if (error.is(std::errc::invalid_argument) || error.is(std::errc::connection_aborted))
+                        break;
+#endif
+                    throw error;
+                }
+
+#ifdef _WIN32
+                /* An accepted socket inherits the listener's inheritability, and
+                   the builder is spawned with `bInheritHandles = TRUE`, so every
+                   inheritable handle would otherwise be duplicated into it. With
+                   `max-jobs > 1` that would let one build's builder receive
+                   another build's live connection to its restricted store. */
+                if (!SetHandleInformation(remote.get(), HANDLE_FLAG_INHERIT, 0))
+                    throw windows::WinError("making daemon connection non-inheritable");
+#else
+                unix::closeOnExec(remote.get());
+#endif
+
+                debug("received daemon connection");
+
+                auto doneFlag = make_ref<std::atomic_flag>();
+
+                auto workerThread =
+                    std::thread([this, doneFlag, storeForDaemon, remote{std::move(remote)}, recursiveFlag]() {
+                        try {
+                            miscMethods->processDaemonConnection(
+                                storeForDaemon, FdSource(remote.get()), FdSink(remote.get()), *this, recursiveFlag);
+                            debug("terminated daemon connection");
+                        } catch (const Interrupted &) {
+                            debug("interrupted daemon connection");
+                        } catch (...) {
+                            /* Swallow all exceptions to avoid crashing the the process (exceptions that escape from the
+                             * thread trigger std::terminate()). */
+                            ignoreExceptionExceptInterrupt();
+                        }
+
+                        doneFlag->test_and_set(std::memory_order_relaxed);
+                    });
+
+                daemonWorkerThreads.push_back(
+                    DaemonWorkerState{
+                        .thread = std::move(workerThread),
+                        .done = std::move(doneFlag),
+                    });
+
+                /* Prune threads eagerly to free up resources. Ideally we'd also limit the number of concurrent workers. */
+                for (auto it = daemonWorkerThreads.begin(), end = daemonWorkerThreads.end(); it != end;) {
+                    auto & state = *it;
+                    auto & thread = state.thread;
+                    if (state.done->test(std::memory_order_relaxed) && thread.joinable()) {
+                        thread.join();
+                        it = daemonWorkerThreads.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+        } catch (const Interrupted &) {
+            debug("interrupted recursive Nix daemon accept loop");
+        } catch (...) {
+            /* An accept-loop failure the two classified sets above don't cover
+               --- WSAEMFILE/WSAENOBUFS on Windows, EMFILE/ENFILE on Unix, or
+               anything else unclassified above --- ends the daemon thread
+               instead of escaping it. An exception escaping a `std::thread`
+               entry point calls `std::terminate()` and aborts the whole
+               process, which would otherwise turn one recursive-nix builder
+               running out of file descriptors into an unrelated process-wide
+               crash rather than a build failure. */
+            ignoreExceptionExceptInterrupt();
+        }
+
+        debug("daemon shutting down");
+    });
+}
+
+void DerivationBuilderImpl::stopDaemon()
+{
+    if (daemonSocket) {
+        /* `shutdown` can fail here --- e.g. with POSIX's ENOTCONN, when
+           `accept` was never called on a connection --- and that failure is
+           harmless: what actually unblocks the `accept()` loop below is
+           closing the socket, which happens unconditionally right after this
+           regardless of whether `shutdown` succeeded. A previous version of
+           this function only closed the socket on specific failure codes and
+           otherwise threw, which (a) left the socket open and the thread
+           running on any other failure, making a retry re-enter the same
+           `shutdown` and throw again, and (b) is not even reachable the same
+           way on Windows, since Winsock's `accept` has no code that means
+           "the listener was shut down out from under me" the way POSIX's
+           `EINVAL` does. So: log and move on, never throw. */
+        if (shutdown(toSocket(daemonSocket.get()), SHUT_RDWR) == -1)
+            debug("shutting down recursive Nix daemon socket failed (likely harmless)");
+
+        /* Unconditional, and before the join below: this close is what wakes
+           the blocked `accept()` in the daemon thread. Doing this only after
+           the join, as a previous version of this function did, would
+           deadlock forever whenever `shutdown` returns success without
+           actually unblocking `accept` on its own. */
+        daemonSocket.close();
+    }
+
+    if (daemonThread.joinable())
+        daemonThread.join();
+
+    for (auto & [thread, doneFlag] : daemonWorkerThreads)
+        thread.join();
+    daemonWorkerThreads.clear();
+}
+
+void DerivationBuilderImpl::submitOutput(const SingleDerivedPath & path, const OutputName & output)
+{
+    auto submittedOutputs(this->submittedOutputs.lock());
+
+    auto * opaque = std::get_if<SingleDerivedPath::Opaque>(&path.raw());
+    if (!opaque)
+        throw Error(
+            "Attempted to submit Built path '%s' for output '%s'.\n"
+            " Only Opaque paths are supported, see https://github.com/NixOS/nix/issues/12727",
+            path.to_string(*store),
+            output);
+
+    if (submittedOutputs->contains(output))
+        throw Error(
+            "Attempted to submit duplicate output '%s' (old '%s', new '%s')",
+            output,
+            store->printStorePath(*get(*submittedOutputs, output)),
+            store->printStorePath(opaque->path));
+
+    submittedOutputs->insert_or_assign(output, opaque->path);
 }
 
 BuildingStore::~BuildingStore() = default;

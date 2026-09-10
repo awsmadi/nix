@@ -74,45 +74,18 @@ protected:
     /**
      * Whether or not derivation is using outputs submitted via recursive-nix
      */
-    bool usingSubmitted;
+    bool usingSubmitted = false;
+
+    bool usingSubmittedOutputs() override
+    {
+        return usingSubmitted;
+    }
 
     static const std::filesystem::path homeDir;
-
-    /**
-     * The recursive Nix daemon socket.
-     */
-    AutoCloseFD daemonSocket;
-
-    /**
-     * The daemon main thread.
-     */
-    std::thread daemonThread;
-
-    struct DaemonWorkerState
-    {
-        std::thread thread;
-        ref<std::atomic_flag> done;
-    };
-
-    /**
-     * The daemon worker threads.
-     */
-    std::list<DaemonWorkerState> daemonWorkerThreads;
 
     const StorePathSet & originalPaths() override
     {
         return inputPaths;
-    }
-
-    bool isAllowed(const StorePath & path) override
-    {
-        if (inputPaths.count(path))
-            return true;
-        auto state(state_.lock());
-        auto iter = state->addedPaths.find(path);
-        if (iter == state->addedPaths.end())
-            return false;
-        return iter->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
     }
 
     bool isAllowed(const DrvOutput & id) override
@@ -126,8 +99,6 @@ protected:
     {
         return !usingSubmitted;
     }
-
-    void submitOutput(const SingleDerivedPath & path, const OutputName & output) override;
 
     friend struct RestrictedStore;
 
@@ -176,7 +147,7 @@ protected:
     /**
      * Return the path of the temporary directory in the sandbox.
      */
-    virtual std::filesystem::path tmpDirInSandbox()
+    std::filesystem::path tmpDirInSandbox() override
     {
         assert(!topTmpDir.empty());
         return topTmpDir;
@@ -236,21 +207,6 @@ protected:
      */
     void processSandboxSetupMessages();
 
-private:
-
-    /**
-     * Start an in-process nix daemon thread for recursive-nix.
-     */
-    void startDaemon();
-
-    /**
-     * Stop the in-process nix daemon thread.
-     * @see startDaemon
-     */
-    void stopDaemon();
-
-protected:
-
     void addDependencyImpl(const StorePath & path) override;
 
     /**
@@ -260,6 +216,12 @@ protected:
      * It's only safe to call in a child of a directory only visible to the owner.
      */
     void chownToBuilder(const std::filesystem::path & path);
+
+    /** Hand the daemon socket to the build user. */
+    void prepareDaemonSocket(const std::filesystem::path & path) override
+    {
+        chownToBuilder(path);
+    }
 
     /**
      * Make a file owned by the builder addressed by its file descriptor.

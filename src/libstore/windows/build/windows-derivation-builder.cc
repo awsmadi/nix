@@ -7,6 +7,7 @@
 #include "nix/util/muxable-pipe.hh"
 #include "nix/util/os-string.hh"
 #include "nix/util/processes.hh"
+#include "nix/util/signals.hh"
 
 #include <windows.h>
 
@@ -79,8 +80,12 @@ OsString escapeArg(OsString arg)
  * - no sandbox, chroot, or filesystem isolation
  * - no build user; the builder runs as whoever ran Nix
  * - no network isolation
- * - no recursive Nix (`submitOutput` throws)
+ * - no dynamic derivations (`usingSubmittedOutputs` is always false, so a
+ *   builder cannot submit its own outputs)
  * - no content-addressed or fixed-output derivations
+ * - no socket permission hardening for the recursive-Nix daemon socket:
+ *   `chmod 0600` (Unix's `prepareDaemonSocket`) is a no-op on Windows, so
+ *   protection rests entirely on the inherited ACL of `%TEMP%`
  *
  * Registering the outputs is `DerivationBuilderImpl::registerOutputs`, the
  * same code Unix runs, so reference scanning and the `allowedReferences`
@@ -101,6 +106,37 @@ public:
     {
     }
 
+    /**
+     * Cleanup to run when destroying the builder, mirroring
+     * `UnixDerivationBuilderImpl::cleanupOnDestruction`.
+     *
+     * `daemonThread` and `daemonSocket` are base-class members: if
+     * `startDaemon` succeeds and something later throws --- `spawnBuilder`
+     * failing to find the builder executable is the ordinary case ---
+     * destroying the builder while the thread is still joinable would
+     * otherwise call `std::terminate` from `~std::thread`.
+     */
+    void cleanupOnDestruction() noexcept
+    {
+        /* Careful: never throw from a noexcept function. Each step is
+           guarded separately so one failure cannot skip the others. */
+        try {
+            killChild();
+        } catch (...) {
+            ignoreExceptionInDestructor();
+        }
+        try {
+            stopDaemon();
+        } catch (...) {
+            ignoreExceptionInDestructor();
+        }
+        try {
+            cleanupBuild(false);
+        } catch (...) {
+            ignoreExceptionInDestructor();
+        }
+    }
+
     /** The worker's I/O completion port, which the log pipe must be tied to. */
     HANDLE ioport;
 
@@ -118,11 +154,6 @@ public:
         return inputPaths;
     }
 
-    bool isAllowed(const StorePath & path) override
-    {
-        return inputPaths.count(path) > 0;
-    }
-
     bool isAllowed(const DrvOutput &) override
     {
         return false;
@@ -134,15 +165,11 @@ public:
         return false;
     }
 
-    void submitOutput(const SingleDerivedPath &, const OutputName &) override
-    {
-        throw UnimplementedError("recursive Nix is not yet supported on Windows");
-    }
-
     void addDependencyImpl(const StorePath &) override
     {
-        /* Only reachable through recursive Nix, which `submitOutput` rejects. */
-        throw UnimplementedError("recursive Nix is not yet supported on Windows");
+        /* As on the unsandboxed Unix builder: there is no sandbox mount to
+           add, so there is nothing to do. Only the chroot-based Unix builders
+           override this to bind-mount the new path in. */
     }
 
     /* --- DerivationBuilder --- */
@@ -221,6 +248,13 @@ OsString WindowsDerivationBuilderImpl::makeEnvBlock()
     /* The derivation's own environment wins over all of the above. */
     for (auto & [name, entry] : desugaredEnv.variables)
         env[os(name)] = os(entry.value);
+
+    /* Recursive Nix, when the daemon is running. This deliberately comes
+       after the derivation's own environment: `startDaemon` binds this
+       value, and a derivation should not be able to redirect it to a daemon
+       of its own choosing. */
+    if (daemonRemoteUri)
+        env[OS_STR("NIX_REMOTE")] = os(*daemonRemoteUri);
 
     OsString block;
     for (auto & [name, value] : env) {
@@ -324,6 +358,12 @@ std::optional<Descriptor> WindowsDerivationBuilderImpl::startBuild()
     /* A fresh build directory per attempt. */
     tmpDir = createTempDir(defaultTempDir(), "nix-build");
 
+    /* Recursive Nix, if the derivation asked for it. Uses the same daemon
+       machinery as Unix; `usingSubmittedOutputs` stays false here, so only
+       plain recursive-nix is offered, not dynamic derivations. */
+    if (drvOptions.getRequiredSystemFeatures(drv).count("recursive-nix"))
+        startDaemon();
+
     /* Clear anything a previous failed build left at the output paths. */
     for (auto & [name, status] : initialOutputs)
         if (status.known)
@@ -363,6 +403,8 @@ BuilderExit WindowsDerivationBuilderImpl::unprepareBuild()
     miscMethods->closeLogFile();
     miscMethods->childTerminated();
 
+    stopDaemon();
+
     return {.status = exitCode};
 }
 
@@ -380,6 +422,14 @@ DerivationBuilderUnique makeDerivationBuilder(
 
 void DerivationBuilderDeleter::operator()(DerivationBuilder * builder) noexcept
 {
+    if (!builder) /* Idempotent and handles nullptr as any deleter must. */
+        return;
+
+    if (auto builderImpl = dynamic_cast<WindowsDerivationBuilderImpl *>(builder))
+        /* Note that this might call into virtual functions, which we can't do in a destructor of
+           the WindowsDerivationBuilderImpl itself. */
+        builderImpl->cleanupOnDestruction();
+
     delete builder;
 }
 
