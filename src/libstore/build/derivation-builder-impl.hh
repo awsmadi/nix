@@ -9,6 +9,8 @@
 #endif
 
 #include <atomic>
+#include <chrono>
+#include <future>
 #include <list>
 #include <thread>
 
@@ -154,10 +156,36 @@ protected:
      */
     std::thread daemonThread;
 
+    /**
+     * Set by `stopDaemon` before it touches `daemonSocket`, and checked by
+     * the accept loop on every iteration.
+     *
+     * Without this, the accept loop re-reads `daemonSocket.get()` with no
+     * synchronisation against `stopDaemon()` closing it: `stopDaemon` can
+     * close the fd between the loop's check and its use, and if that fd
+     * number has already been reused for an unrelated *listening* socket
+     * (plausible under `max-jobs > 1`, since a sibling build's own
+     * `.nix-socket` is the most likely occupant), `accept` on it can
+     * succeed and this thread would serve the sibling's connection with
+     * *our* restricted store and `*this` as the `RestrictionContext`. This
+     * flag lets the loop recognise a shutdown in progress instead of
+     * inferring it from an accept failure's error code, which both closes
+     * that hole and makes the error classification below only responsible
+     * for classifying genuine errors.
+     */
+    std::atomic<bool> daemonStopping{false};
+
     struct DaemonWorkerState
     {
         std::thread thread;
         ref<std::atomic_flag> done;
+        /**
+         * Shared with the worker thread, so `stopDaemon` can `shutdown` it
+         * to unblock a worker whose client never closes its own end.
+         * Closing the listener only wakes a blocked `accept`; it does
+         * nothing for connections already accepted.
+         */
+        ref<AutoCloseFD> remote;
     };
 
     /**

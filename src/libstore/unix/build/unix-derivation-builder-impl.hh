@@ -25,8 +25,6 @@ class UnixDerivationBuilderImpl : public DerivationBuilderImpl
 private:
     void anchor() override;
 
-protected:
-
 public:
 
     using DerivationBuilderImpl::DerivationBuilderImpl;
@@ -88,6 +86,14 @@ protected:
         return inputPaths;
     }
 
+    /* The `DrvOutput` overload below hides the base class's `StorePath`
+       overload unless brought back into scope explicitly; without this, a
+       call to `isAllowed(someStorePath)` on a concrete
+       `UnixDerivationBuilderImpl` (rather than through a
+       `RestrictionContext &`) fails to resolve to the hoisted base
+       implementation. */
+    using DerivationBuilderImpl::isAllowed;
+
     bool isAllowed(const DrvOutput & id) override
     {
         return state_.lock()->addedDrvOutputs.count(id);
@@ -99,8 +105,6 @@ protected:
     {
         return !usingSubmitted;
     }
-
-    friend struct RestrictedStore;
 
     /**
      * Whether we need to perform hash rewriting if there are valid output paths.

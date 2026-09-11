@@ -831,38 +831,67 @@ void DerivationBuilderImpl::startDaemon()
                 AutoCloseFD remote =
                     fromSocket(accept(toSocket(daemonSocket.get()), (struct sockaddr *) &remoteAddr, &remoteAddrLen));
                 if (!remote) {
+                    /* Checked before classifying the error at all: once
+                       `stopDaemon` has set this, why `accept` failed doesn't
+                       matter, and the fd it failed on may already have been
+                       reused by the time we'd classify it anyway. */
+                    if (daemonStopping.load(std::memory_order_relaxed))
+                        break;
+
                     NativeSysError error("accepting connection");
 #ifdef _WIN32
                     /* `error.is(std::errc::...)` can't classify these: libstdc++'s
                        `std::system_category` does not fold Winsock codes into the
-                       generic `errc` values it recognizes on Windows, so they
+                       generic `errc` values it recognises on Windows, so they
                        never match there. Compare the raw code instead.
                        `WSAGetLastError` and `GetLastError` share the same
                        thread-local slot, so the value `NativeSysError` already
                        captured above is the right one to check. `WSAEWOULDBLOCK`
                        is deliberately not treated as "retry": this listener is
                        blocking, unlike the non-blocking socket that makes `EAGAIN`
-                       meaningful on the Unix side below. The two branches are not
-                       a mirror image of each other: Winsock documents
-                       `WSAECONNRESET` for `accept` itself (a peer that reset the
-                       connection before we finished accepting it, which does not
-                       indicate the listener is going away), while
+                       meaningful on the Unix side below. The two shutdown sets
+                       below are not a mirror image of each other: Winsock
+                       documents `WSAECONNRESET` for `accept` itself (a peer that
+                       reset the connection before we finished accepting it,
+                       which does not indicate the listener is going away), while
                        `WSAECONNABORTED` is documented for `recv`/`send`, not
-                       `accept` --- it is kept in the shutdown set defensively,
+                       `accept` --- it is kept in the break set defensively,
                        since a socket that can never produce it is harmless to
                        check for. */
                     if (error.lastError == WSAEINTR || error.lastError == WSAECONNRESET)
                         continue;
+                    if (error.lastError == WSAEMFILE || error.lastError == WSAENOBUFS) {
+                        /* Transient: a worker finishing frees descriptors. Safe
+                           to retry rather than tear the daemon down, since
+                           `daemonStopping` (checked above) is what actually
+                           tells this loop to stop. */
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        continue;
+                    }
                     if (error.lastError == WSAEINVAL || error.lastError == WSAECONNABORTED
                         || error.lastError == WSAENOTSOCK)
                         break;
 #else
                     if (error.is(std::errc::interrupted) || error.is(std::errc::resource_unavailable_try_again))
                         continue;
+                    if (error.is(std::errc::too_many_files_open) || error.is(std::errc::too_many_files_open_in_system)
+                        || error.is(std::errc::no_buffer_space)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        continue;
+                    }
                     if (error.is(std::errc::invalid_argument) || error.is(std::errc::connection_aborted))
                         break;
 #endif
                     throw error;
+                }
+
+                if (daemonStopping.load(std::memory_order_relaxed)) {
+                    /* Accepted on what `stopDaemon` is tearing down --- possibly
+                       a listening socket that reused our fd number after we
+                       closed it, per the note on `daemonStopping`'s declaration.
+                       Whatever this connection actually is, we don't serve it. */
+                    remote.close();
+                    break;
                 }
 
 #ifdef _WIN32
@@ -879,29 +908,50 @@ void DerivationBuilderImpl::startDaemon()
 
                 debug("received daemon connection");
 
+                /* Shared rather than moved: `stopDaemon` keeps a handle on this
+                   via `DaemonWorkerState::remote` so it can shut the connection
+                   down if the client never closes its own end. */
+                auto remoteShared = make_ref<AutoCloseFD>(std::move(remote));
+
                 auto doneFlag = make_ref<std::atomic_flag>();
 
-                auto workerThread =
-                    std::thread([this, doneFlag, storeForDaemon, remote{std::move(remote)}, recursiveFlag]() {
-                        try {
-                            miscMethods->processDaemonConnection(
-                                storeForDaemon, FdSource(remote.get()), FdSink(remote.get()), *this, recursiveFlag);
-                            debug("terminated daemon connection");
-                        } catch (const Interrupted &) {
-                            debug("interrupted daemon connection");
-                        } catch (...) {
-                            /* Swallow all exceptions to avoid crashing the the process (exceptions that escape from the
-                             * thread trigger std::terminate()). */
-                            ignoreExceptionExceptInterrupt();
-                        }
+                auto workerThread = std::thread([this, doneFlag, storeForDaemon, remoteShared, recursiveFlag]() {
+                    try {
+                        miscMethods->processDaemonConnection(
+                            storeForDaemon,
+                            FdSource(remoteShared->get()),
+                            FdSink(remoteShared->get()),
+                            *this,
+                            recursiveFlag);
+                        debug("terminated daemon connection");
+                    } catch (const Interrupted &) {
+                        debug("interrupted daemon connection");
+                    } catch (const Cancelled &) {
+                        /* This is what `Interrupted` becomes on Windows for
+                           anything routed through the substitution-transfer
+                           code: `getInterrupted()` is hardcoded false there, so
+                           that code picks `Cancelled` over `Interrupted`
+                           unconditionally, making this the only branch of the
+                           pair Windows can ever take. Without it, `Cancelled`
+                           falls to `catch (...)` below, which rethrows both this
+                           and `Interrupted` by design --- see
+                           `ignoreExceptionExceptInterrupt` --- and an exception
+                           escaping a thread entry point is `std::terminate()`. */
+                        debug("cancelled daemon connection");
+                    } catch (...) {
+                        /* Swallow all exceptions to avoid crashing the the process (exceptions that escape from the
+                         * thread trigger std::terminate()). */
+                        ignoreExceptionExceptInterrupt();
+                    }
 
-                        doneFlag->test_and_set(std::memory_order_relaxed);
-                    });
+                    doneFlag->test_and_set(std::memory_order_relaxed);
+                });
 
                 daemonWorkerThreads.push_back(
                     DaemonWorkerState{
                         .thread = std::move(workerThread),
                         .done = std::move(doneFlag),
+                        .remote = remoteShared,
                     });
 
                 /* Prune threads eagerly to free up resources. Ideally we'd also limit the number of concurrent workers. */
@@ -918,15 +968,19 @@ void DerivationBuilderImpl::startDaemon()
             }
         } catch (const Interrupted &) {
             debug("interrupted recursive Nix daemon accept loop");
+        } catch (const Cancelled &) {
+            /* See the identical clause in the worker thread above: this is the
+               only one of the pair reachable on Windows. */
+            debug("cancelled recursive Nix daemon accept loop");
         } catch (...) {
-            /* An accept-loop failure the two classified sets above don't cover
-               --- WSAEMFILE/WSAENOBUFS on Windows, EMFILE/ENFILE on Unix, or
-               anything else unclassified above --- ends the daemon thread
-               instead of escaping it. An exception escaping a `std::thread`
-               entry point calls `std::terminate()` and aborts the whole
-               process, which would otherwise turn one recursive-nix builder
-               running out of file descriptors into an unrelated process-wide
-               crash rather than a build failure. */
+            /* An accept-loop failure the classified sets above don't cover ---
+               anything left unclassified after the transient-retry and
+               shutdown-detection handling --- ends the daemon thread instead of
+               escaping it. An exception escaping a `std::thread` entry point
+               calls `std::terminate()` and aborts the whole process, which would
+               otherwise turn one recursive-nix builder hitting an unexpected
+               socket error into an unrelated process-wide crash rather than a
+               build failure. */
             ignoreExceptionExceptInterrupt();
         }
 
@@ -936,6 +990,11 @@ void DerivationBuilderImpl::startDaemon()
 
 void DerivationBuilderImpl::stopDaemon()
 {
+    /* Set before touching `daemonSocket` at all; see the member's own
+       doc-comment for why the accept loop needs to see this rather than
+       infer a shutdown from `accept`'s error code. */
+    daemonStopping.store(true, std::memory_order_relaxed);
+
     if (daemonSocket) {
         /* `shutdown` can fail here --- e.g. with POSIX's ENOTCONN, when
            `accept` was never called on a connection --- and that failure is
@@ -963,8 +1022,24 @@ void DerivationBuilderImpl::stopDaemon()
     if (daemonThread.joinable())
         daemonThread.join();
 
-    for (auto & [thread, doneFlag] : daemonWorkerThreads)
-        thread.join();
+    /* By this point the accept loop above has returned --- the join just
+       finished --- so it is no longer mutating `daemonWorkerThreads`, and
+       walking it from this thread is safe. Closing the listener above did
+       nothing for connections it had already accepted: a worker only
+       returns once its client closes its own end, or once we shut its
+       socket down here. Without this, a builder that opens a recursive-nix
+       connection and then hangs (or spawns something detached and exits)
+       leaves the join below blocked forever, on both platforms: Unix
+       usually survives via `killSandbox` killing everything running as the
+       build user first, but that path is a no-op without one, and Windows
+       has no build user at all. */
+    for (auto & state : daemonWorkerThreads)
+        if (*state.remote)
+            shutdown(toSocket(state.remote->get()), SHUT_RDWR);
+
+    for (auto & state : daemonWorkerThreads)
+        if (state.thread.joinable())
+            state.thread.join();
     daemonWorkerThreads.clear();
 }
 

@@ -154,6 +154,10 @@ public:
         return inputPaths;
     }
 
+    /* The `DrvOutput` overload below hides the base class's `StorePath`
+       overload unless brought back into scope explicitly. */
+    using DerivationBuilderImpl::isAllowed;
+
     bool isAllowed(const DrvOutput &) override
     {
         return false;
